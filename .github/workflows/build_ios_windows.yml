@@ -2,14 +2,12 @@ name: Build iOS & Windows
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "ios-win-v*"
 
 jobs:
   build-ios:
     name: Build unsigned IPA
     runs-on: macos-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -18,22 +16,21 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
+          flutter-version: "3.38.3"
+          channel: stable
           cache: true
 
       - name: Restore packages
-        run: |
-          cd simple_live_app
-          flutter pub get
+        working-directory: simple_live_app
+        run: flutter pub get
 
       - name: Build iOS (no codesign)
-        run: |
-          cd simple_live_app
-          flutter build ios --release --no-codesign
+        working-directory: simple_live_app
+        run: flutter build ios --release --no-codesign
 
       - name: Pack unsigned IPA
+        working-directory: simple_live_app
         run: |
-          cd simple_live_app
           mkdir -p build/ios/iphoneos/Payload
           cp -R build/ios/iphoneos/Runner.app build/ios/iphoneos/Payload/Runner.app
           cd build/ios/iphoneos
@@ -47,36 +44,61 @@ jobs:
 
   build-windows:
     name: Build Windows ZIP
-    runs-on: windows-latest
+    runs-on: windows-2022
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
 
+      - name: Enable long paths
+        run: git config --system core.longpaths true
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.38.x"
+          flutter-version: "3.38.3"
+          channel: stable
           cache: true
 
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
       - name: Restore packages
-        run: |
-          cd simple_live_app
-          flutter pub get
+        working-directory: simple_live_app
+        run: flutter pub get
 
-      - name: Install flutter_distributor
-        run: dart pub global activate flutter_distributor
+      - name: Build Windows
+        working-directory: simple_live_app
+        run: flutter build windows --release
 
-      - name: Package Windows zip
+      - name: Zip Release folder
+        working-directory: simple_live_app
+        shell: pwsh
         run: |
-          cd simple_live_app
-          flutter_distributor package --platform windows --targets zip --skip-clean
+          $candidates = @(
+            "build\windows\x64\runner\Release",
+            "build\windows\runner\Release"
+          )
+          $release = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $release) {
+            Write-Error "Release 目录不存在，Windows 编译可能失败"
+            Get-ChildItem -Recurse build\windows -ErrorAction SilentlyContinue | Select-Object -First 50
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path "..\dist" | Out-Null
+          if (Get-Command 7z -ErrorAction SilentlyContinue) {
+            & 7z a -tzip "..\dist\simple_live_windows.zip" ".\$release\*"
+          } else {
+            Compress-Archive -Path ".\$release\*" -DestinationPath "..\dist\simple_live_windows.zip" -Force
+          }
+          Get-Item "..\dist\simple_live_windows.zip"
 
       - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: simple_live_app/build/dist/*/*.zip
+          path: dist/simple_live_windows.zip
